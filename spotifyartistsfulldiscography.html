@@ -1,0 +1,763 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Spotify Artist Full Discography</title>
+  <link rel="icon" href="https://accounts.scdn.co/oauth2/images/favicon.ace4d8543bbb017893402a1e9d1ac1fa.ico">
+</head>
+<body>
+
+<form>
+  <label>Artists:</label>
+  <input type="text" id="artist"><br>
+  <i>Separate artists with a hash (#)</i><br><br>
+
+  <label><input type="checkbox" id="regular" checked> Studio</label><br>
+  <label><input type="checkbox" id="live" checked> Live</label><br>
+  <label><input type="checkbox" id="remix" checked> Remix</label><br>
+  <label><input type="checkbox" id="acoustic" checked> Acoustic</label><br>
+  <label><input type="checkbox" id="demo" checked> Demo</label><br>
+  <label><input type="checkbox" id="instrumentals" checked> Instrumental</label><br>
+  <label><input type="checkbox" id="commentary"> Commentary</label><br><br>
+
+  <label><input type="checkbox" id="remastered" checked> Include remasters</label><br>
+  <label><input type="checkbox" id="earliestFirst"> Latest first</label><br>
+  <label><input type="checkbox" id="addToNewMusic" checked> Add to New Music</label><br><br>
+</form>
+
+<button onclick="handleSubmit()">Submit</button>
+
+<script>
+// ==============================
+// CONFIG (FROM YOUR ORIGINAL FILE)
+// ==============================
+const clientId = "832823412cb94066827bf464ec780057";
+const redirectUri = "https://taylorlivein2.github.io/spotifyartistsfulldiscography";
+const scopes =
+  "playlist-read-private playlist-modify-public playlist-modify-private user-read-private user-read-email";
+const MARKET = "GB";
+const PLAYLIST_CHUNK = 75;
+
+// ==============================
+// PRINT
+// ==============================
+function print(msg) {
+  document.body.innerHTML += "<br>" + msg;
+  console.log(msg);
+  window.scrollTo(0, document.body.scrollHeight);
+}
+
+// ==============================
+// PKCE AUTH (UNCHANGED STYLE)
+// ==============================
+function generateRandomString(len) {
+  const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+  let str = "";
+  for (let i = 0; i < len; i++)
+    str += chars.charAt(Math.floor(Math.random() * chars.length));
+  return str;
+}
+
+function base64url(buf) {
+  return btoa(String.fromCharCode.apply(null, new Uint8Array(buf)))
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/, "");
+}
+
+async function sha256(bytes) {
+  return crypto.subtle.digest("SHA-256", bytes);
+}
+
+async function startAuth() {
+  const verifier = generateRandomString(128);
+  sessionStorage.setItem("code_verifier", verifier);
+
+  const challenge = base64url(
+    await sha256(new TextEncoder().encode(verifier))
+  );
+
+  window.location =
+    "https://accounts.spotify.com/authorize?" +
+    new URLSearchParams({
+      response_type: "code",
+      client_id: clientId,
+      scope: scopes,
+      redirect_uri: redirectUri,
+      code_challenge_method: "S256",
+      code_challenge: challenge,
+      show_dialog: "true",
+    });
+}
+
+async function getTokenFromCode() {
+  const params = new URLSearchParams(window.location.search);
+  const code = params.get("code");
+  if (!code) return null;
+
+  const verifier = sessionStorage.getItem("code_verifier");
+
+  const body = new URLSearchParams({
+    client_id: clientId,
+    grant_type: "authorization_code",
+    code,
+    redirect_uri: redirectUri,
+    code_verifier: verifier,
+  });
+
+  const resp = await fetch("https://accounts.spotify.com/api/token", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body,
+  });
+
+  const data = await resp.json();
+  if (data.access_token) {
+    sessionStorage.setItem("spotify_token", data.access_token);
+    history.replaceState({}, document.title, redirectUri);
+    return data.access_token;
+  }
+  return null;
+}
+
+// ==============================
+// RATE-LIMITED FETCH (FROM ORIGINAL FILE)
+// ==============================
+let requestQueue = [];
+let processing = false;
+let globalDelay = 0;
+
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+async function queueRequest(task) {
+  return new Promise((resolve, reject) => {
+    requestQueue.push({ task, resolve, reject });
+    if (!processing) processQueue();
+  });
+}
+
+async function processQueue() {
+  processing = true;
+  while (requestQueue.length) {
+    const { task, resolve, reject } = requestQueue.shift();
+    if (globalDelay) await sleep(globalDelay);
+    try { resolve(await task()); }
+    catch (e) { reject(e); }
+  }
+  processing = false;
+}
+
+async function safeFetch(url, method="GET", body=null, headers={}) {
+  return queueRequest(async () => {
+    const resp = await fetch(url, { method, headers, body });
+    if (resp.status === 429) {
+      const retry = (parseInt(resp.headers.get("Retry-After")) || 2) * 1000;
+      print("429 — waiting " + retry + "ms");
+      globalDelay = retry;
+      await sleep(retry);
+      globalDelay = 0;
+      return safeFetch(url, method, body, headers);
+    }
+    if (!resp.ok) throw new Error(await resp.text());
+    return resp.json();
+  });
+}
+
+// ==============================
+// FORM HANDLING
+// ==============================
+function handleSubmit() {
+  document.cookie =
+    "Options=" + artist.value + "~~" +
+    ["regular","live","remix","acoustic","demo","instrumentals","commentary","remastered","earliestFirst","addToNewMusic"]
+      .map(id => document.getElementById(id).checked ? "Y" : "N")
+      .join("");
+  startAuth();
+}
+
+function getCookie(name) {
+  /*return document.cookie
+    .split("; ")
+    .find(r => r.startsWith(name + "="))
+    ?.split("=")[1];*/
+	const value = `; ${document.cookie}`;
+	const parts = value.split(`; ${name}=`);
+	if (parts.length === 2) { return parts.pop().split(';').shift(); }
+}
+
+// ==============================
+// functions
+// ==============================
+var CentralPart = "#with#";
+var THRESHOLD = 5; // in seconds
+function CompareFilterIDs(f1,f2,a1,a2)
+{
+	a1 = a1.toLowerCase();
+	a2 = a2.toLowerCase();
+	if(f1 == f2) // Same song, same length
+	{
+		return true;
+	}
+	else
+	{
+		//print(f1+"|"+f2+"|"+a1+"|"+a2,true);
+		var found = false;
+		var words = ["recorded","imagined","imagining","recording","master"];
+		words.forEach(function(word) {
+			var prefixes = ["re","re\-"];
+			prefixes.forEach(function(prefix) {
+				var f1Contains = f1.includes(prefix+word) || a1.includes(prefix+word);
+				var f2Contains = f2.includes(prefix+word) || a2.includes(prefix+word);
+				//print("a2: "+a2+" / "+prefix+word+" "+(f1Contains ? "true" : "false")+" "+(f2Contains ? "true" : "false"),true);
+				if( (f1Contains && !f2Contains) || (f2Contains && !f1Contains))
+				{
+					found = true;
+					return;
+				}
+			});
+			if(found)
+			{
+				return;
+			}
+		});
+		if(found)
+		{
+			return false;
+		}
+		var split1 = f1.split(CentralPart); // Get the song name, and the time separately
+		var split2 = f2.split(CentralPart); // Same for the second song
+		if(split1[0]!=split2[0]) // If the songs are different...
+		{
+			return false;
+		}
+		else // Same song, different length
+		{
+			return (Math.abs(parseInt(split1[1])-parseInt(split2[1])) < THRESHOLD*1000);
+		}
+	}
+}
+
+function IsLive(name,albumname)
+{
+	return(name.includes("- live") || name.includes("(live)") || name.includes("live session") || name.includes("live at") || name.includes("(live") || albumname.includes("- live") || albumname.includes("(live)") || albumname.includes("live session") || albumname.includes("live at") || albumname.includes("(live") || albumname.startsWith("live at") || albumname.startsWith("live in") || albumname.includes("recorded at") || albumname.includes("1 mic 1 take") || albumname.includes("1 mic, 1 take") || albumname.includes("1 mic/1 take") || albumname.includes("live from") || name.startsWith("live at") || name.startsWith("live in") || name.includes("recorded at") || name.includes("1 mic 1 take") || name.includes("1 mic, 1 take") || name.includes("1 mic/1 take") || name.includes("live from") || name.includes("studio session") || albumname.includes("studio session") || name.includes("radio session") || albumname.includes("radio session")) ;
+}
+
+function IsRemix(name,albumname)
+{
+	return((name.includes("remix") || name.includes(" mix") || name.includes("re-mix")) && !name.includes("single remix") && !name.includes("single mix") && !name.includes("single re-mix") || name.includes("radio edit") || albumname.includes("radio edit") || name.includes("radio mix")|| name.includes("alternate version") || name.includes("alternative version") || name.includes("- edit") || name.includes("karaoke version") || albumname.includes("release special"));
+}
+
+function IsAcoustic(name,albumname)
+{
+	return (name.includes("acoustic") || albumname.includes("acoustic") || name.includes("unplugged") || albumname.includes("unplugged") || name.includes("(stripped)") || albumname.includes("(stripped)") || name.includes("- stripped") || albumname.includes("- stripped")) ;
+}
+
+function IsCommentary(name,albumname)
+{
+	return (name.includes("commentary") || name.includes("track-by-track") || name.includes("interview") || albumname.includes("interviews"));
+}
+
+function IsInstrumental(name,albumname)
+{
+	return(name.includes("instrumental") || albumname.includes("instrumentation") || albumname.includes("instrumental"));
+}
+function IsRemastered(name,albumname)
+{
+	return(name.includes("remaster"));
+}
+function IsDemo(name,albumname)
+{
+	return(name.includes("- demo") || name.includes("demo)") || name.includes("- live demo") || name.includes("- outtake") || name.includes("outtake)") || name.includes("- live outtake") || name.includes("demo recording") || name.includes("demo version"));
+}
+
+var AlbumExplicitness = [];
+async function GetExplicitness(albumID,artistID,albumDetails)
+{
+	if(AlbumExplicitness[albumID]==null)
+	{
+		if(albumDetails==null)
+		{
+			let url = `https://api.spotify.com/v1/albums/${albumID}?market=${MARKET}`;
+			albumDetails = [];
+			while (url) {
+				const data = await safeFetch(url, "GET", null, headers);
+				if(data.artists[0]==artistID)
+				{
+					return 0;
+				}
+				albumDetails.push(...data.tracks.items);
+				url = data.next;
+			}
+		}
+		var explicitness = 0;
+		for(let p=0; p<albumDetails.length; p++)
+		{
+			if(albumDetails[p]["explicit"]==true)
+			{
+				explicitness++;
+			}
+		}
+		AlbumExplicitness[albumID] =  explicitness/albumDetails.length;
+	}
+	return AlbumExplicitness[albumID];
+}
+
+var AlbumLengths = [];
+async function GetAlbumLength(albumID,artistID,albumDetails)
+{
+	if(AlbumLengths[albumID]==null)
+	{
+		if(albumDetails==null)
+		{
+			let url = `https://api.spotify.com/v1/albums/${albumID}?market=${MARKET}`;
+			albumDetails = [];
+			while (url) {
+				const data = await safeFetch(url, "GET", null, headers);
+				if(data.artists[0]==artistID)
+				{
+					return 0;
+				}
+				albumDetails.push(...data.tracks.items);
+				url = data.next;
+			}
+		}
+		var len = 0;
+		for(let p=0; p<albumDetails.length; p++)
+		{
+			len += parseInt(albumDetails[p]["duration_ms"]);
+		}
+		AlbumLengths[albumID] = len;
+	}
+	return AlbumLengths[albumID];
+}
+
+// ==============================
+// MAIN
+// ==============================
+
+let cookie = getCookie("Options");
+	print("Cookie: "+document.cookie);
+	print("Options: "+cookie);
+	let MusicArtist = cookie.split("~~")[0];
+	let choice = cookie.split("~~")[1];
+	document.getElementById("artist").value = MusicArtist;
+	document.getElementById("regular").checked = choice.substring(0,1) == "Y";
+	document.getElementById("live").checked = choice.substring(1,2) == "Y";
+	document.getElementById("remix").checked = choice.substring(2,3) == "Y";
+	document.getElementById("acoustic").checked = choice.substring(3,4) == "Y";
+	document.getElementById("demo").checked = choice.substring(4,5) == "Y";
+	document.getElementById("instrumentals").checked = choice.substring(5,6) == "Y";
+	document.getElementById("commentary").checked = choice.substring(6,7) == "Y";
+	document.getElementById("remastered").checked = choice.substring(7,8) == "Y";
+	document.getElementById("earliestFirst").checked = choice.substring(8,9) == "Y";
+	document.getElementById("addToNewMusic").checked = choice.substring(9,10) == "Y";
+
+(async function main() {
+
+  let cookie = getCookie("Options");
+	//print("Cookie: "+document.cookie);
+	//print("Options: "+cookie);
+	let MusicArtist = cookie.split("~~")[0];
+	let choice = cookie.split("~~")[1];
+	document.getElementById("artist").value = MusicArtist;
+	document.getElementById("regular").checked = choice.substring(0,1) == "Y";
+	document.getElementById("live").checked = choice.substring(1,2) == "Y";
+	document.getElementById("remix").checked = choice.substring(2,3) == "Y";
+	document.getElementById("acoustic").checked = choice.substring(3,4) == "Y";
+	document.getElementById("demo").checked = choice.substring(4,5) == "Y";
+	document.getElementById("instrumentals").checked = choice.substring(5,6) == "Y";
+	document.getElementById("commentary").checked = choice.substring(6,7) == "Y";
+	document.getElementById("remastered").checked = choice.substring(7,8) == "Y";
+	document.getElementById("earliestFirst").checked = choice.substring(8,9) == "Y";
+	document.getElementById("addToNewMusic").checked = choice.substring(9,10) == "Y";
+
+  let token = sessionStorage.getItem("spotify_token");
+  if (!token) token = await getTokenFromCode();
+  if (!token) return;
+
+  const headers = {
+    Authorization: "Bearer " + token,
+    "Content-Type": "application/json"
+  };
+
+  const me = await safeFetch("https://api.spotify.com/v1/me", "GET", null, headers);
+  print("Logged in as: " + me.id);
+  let SpotifyUsername = me.id;
+
+  const ArtistNames = MusicArtist?.split("#").map(a => a.trim()) || [];
+  if (!ArtistNames.length) return;
+
+	// Get all playlists
+  const playlistNames = [];
+  let pNext = "https://api.spotify.com/v1/me/playlists?limit=50";
+  while (pNext) {
+    const p = await safeFetch(pNext, "GET", null, headers);
+    p.items.forEach(pl => playlistNames.push(pl.name.toLowerCase()));
+    pNext = p.next;
+  }
+
+  console.log(playlistNames);
+
+  for (const ArtistName of ArtistNames) {
+    print("<hr><b>" + ArtistName + "</b>");
+
+	if (playlistNames.includes(ArtistName.toLowerCase()))
+	{
+		print("============================================ '" + ArtistName + "' ALREADY RETRIEVED ============================================");
+		continue;
+	}
+
+	let artistID = null;
+	let artistName = null;
+	
+	if(ArtistName.startsWith("ID="))
+	{
+		artistID = ArtistName.substring(3);
+		var NameFromID = "https://api.spotify.com/v1/artists/" + artistID;
+
+		const search = await safeFetch(
+		NameFromID,
+		"GET", null, headers
+		);
+
+		if (!search.artists.items.length) {
+			print("Artist not found");
+			continue;
+		}
+
+		artistName = search.artists.items[0].name;
+
+		if(playlistNames.filter(pn => pn == artistName.toLowerCase()).length > 0)
+		{
+			print("============================================ '" + data["name"] + "' ALREADY RETRIEVED ============================================");
+			continue;
+		}
+	}
+	else
+	{
+		var nameFromID = "https://api.spotify.com/v1/search?q=" + encodeURIComponent(ArtistName).split("%20").join("+") + "&type=artist&market=GB&limit=10&offset=0";
+		print("URL: " + nameFromID);
+
+		const search = await safeFetch(
+		nameFromID,
+		"GET", null, headers
+		);
+
+		if (!search.artists.items.length) {
+			print("Artist not found");
+			continue;
+		}
+
+		for(let k=0; k<search.artists.items.length; k++)
+		{
+			if(search.artists.items[k].name.toLowerCase()==ArtistName.toLowerCase())
+			{
+				artistID = search.artists.items[k].id;
+				artistName = search.artists.items[k].name;
+				break;
+			}
+		}
+	}
+
+	if (artistID == null) {
+		print("Artist not found");
+		continue;
+	}
+
+	// Get albums and singles:
+	let discography = [];
+    let url = `https://api.spotify.com/v1/artists/${artistID}/albums?limit=50&market=${MARKET}`;
+
+    while (url) {
+      const data = await safeFetch(url, "GET", null, headers);
+      discography.push(...data.items);
+      url = data.next;
+    }
+
+	print(discography.length + "/" + artistName);
+
+	// Sort the albums and singles in release date order:
+	print("Sorting...",true);
+	discography.sort(function(a,b){
+		// b then a for LATEST FIRST, a then b for EARLIEST first
+		return ((choice.substring(8,9)!="Y" ? 1 : -1)*(new Date(a["release_date"]) - new Date(b["release_date"])));
+	});
+	discography.forEach(function(record) {
+		//print(record["release_date"] + " | " + record["album_type"]);
+	});
+	
+	print("Getting songs from records:",true);
+	var songs = [];
+	
+    for (const record of discography) {
+      const album = await safeFetch(
+        `https://api.spotify.com/v1/albums/${record.id}?market=${MARKET}`,
+        "GET", null, headers
+      );
+      album.tracks.items.forEach(track => {
+        var isArtist = false;
+		track["artists"].forEach(function(art) {
+			if (art["id"] == artistID && isArtist==false)
+			{
+				isArtist = true;
+			}
+		})
+		if (isArtist == true)
+		{
+			songs.push({id: track["id"],track: track, type: album["album_type"]=="compilation" ? (album.artists[0].id == artistID ? "compilation_own" : "compilation") : (album["album_type"]),album: album,filterID: (track["name"]+CentralPart+track["duration_ms"]).toLowerCase(),albumExplicitness:GetExplicitness(record["id"],artistID,album["tracks"]["items"]),albumLength:GetAlbumLength(record["id"],artistID,album["tracks"]["items"])});
+		}
+      });
+    }
+
+    if (!songs.length) continue;
+
+	// Filter out songs (Album>Comp>Single>AppearOn):
+	var AllSongs = [];
+	var SongDictionary = [];
+	var dictionaryOfSongTitles = [];
+	var AlbumTypes = {
+		'album': 3,
+		'compilation_own': 2.5,
+		'single': 2,
+		'compilation': 1,
+		'appears_on': 0
+	};
+	print("Scanning through songs:",true);
+	for (let i=0; i<songs.length; i++)
+	{
+		let currentSong = songs[i];
+		if(currentSong.album.artists[0].name == "Various Artists" || (currentSong.track.available_markets != null && currentSong.track.available_markets.indexOf("GB")<0))
+		{
+			// ignore all foreign compilations AND unavailable songs
+		}
+		else if ((choice.substring(1,2)!="Y" && IsLive(currentSong.track.name.toLowerCase(),currentSong.album.name.toLowerCase())) || (choice.substring(2,3)!="Y" && IsRemix(currentSong.track.name.toLowerCase(),currentSong.album.name.toLowerCase())) || (choice.substring(3,4)!="Y" && IsAcoustic(currentSong.track.name.toLowerCase(),currentSong.album.name.toLowerCase())) || (choice.substring(4,5)!="Y" && IsDemo(currentSong.track.name.toLowerCase(),currentSong.album.name.toLowerCase())) || (choice.substring(5,6)!="Y" && IsInstrumental(currentSong.track.name.toLowerCase(),currentSong.album.name.toLowerCase())) || (choice.substring(6,7)!="Y" && IsCommentary(currentSong.track.name.toLowerCase(),currentSong.album.name.toLowerCase()))|| (choice.substring(7,8)!="Y" && IsRemastered(currentSong.track.name.toLowerCase(),currentSong.album.name.toLowerCase())))
+		{
+			// ignore based on choices
+		}
+		else if (choice.substring(0,1)!="N") // If It's a studio track and those are allowed...
+		{
+		
+				//console.log("----------------------");
+				//console.log(dictionaryOfSongTitles);
+				//console.log(currentSong.track.name.toLowerCase());	//console.log(dictionaryOfSongTitles[currentSong.track.name.toLowerCase()]);
+			if(dictionaryOfSongTitles["#"+currentSong.track.name.toLowerCase()]==null)
+			{
+				AllSongs.push(i);
+				SongDictionary[currentSong.filterID] = AllSongs.length-1;
+				//print(SongDictionary[currentSong.filterID] + ":"+currentSong.filterID+currentSong.type);
+				dictionaryOfSongTitles["#"+currentSong.track.name.toLowerCase()] = [currentSong];
+				//print("New: "+currentSong.filterID,true);
+			}
+			else // It has occured before...
+			{
+				var SameSong = false;
+				var songIsActually = null;
+				for (const [ indo, valo ] of Object.entries(dictionaryOfSongTitles["#"+currentSong.track.name.toLowerCase()])) {
+					SameSong = CompareFilterIDs(currentSong.filterID,valo.filterID,currentSong.album.name,valo.album.name);
+					if(SameSong)
+					{
+						songIsActually = valo.filterID;
+						break;
+					}
+				}
+				if(!SameSong)
+				{
+					AllSongs.push(i);
+					SongDictionary[currentSong.filterID] = AllSongs.length-1;
+					dictionaryOfSongTitles["#"+currentSong.track.name.toLowerCase()].push(currentSong);
+					//print("ThoughtOldButNew: "+currentSong.filterID,true);
+				}
+				else
+				{
+					let positionInAllSongs = SongDictionary[songIsActually];
+					let positionInSongs = AllSongs[positionInAllSongs];
+					let otherSong = songs[positionInSongs];
+					if (AlbumTypes[currentSong.type] > AlbumTypes[otherSong.type] || (AlbumTypes[currentSong.type] == AlbumTypes[otherSong.type] && (currentSong.album["release_date"]<otherSong.album["release_date"] || (otherSong.album.name.toLowerCase().includes("playlist") && !currentSong.album.name.toLowerCase().includes("playlist")) || (currentSong.albumLength>otherSong.albumLength && currentSong.album["release_date"]==otherSong.album["release_date"]) || (currentSong.albumLength==otherSong.albumLength && currentSong.albumExplicitness>otherSong.albumExplicitness && currentSong.album["release_date"]==otherSong.album["release_date"]))) ) // Is the better standing of the song
+					{
+						AllSongs[positionInAllSongs] = -1
+						AllSongs.push(i);
+						SongDictionary[currentSong.filterID] = AllSongs.length-1;
+						SongDictionary[songIsActually] = AllSongs.length-1;
+						//print("WOW:"+currentSong.filterID);
+						//print("CheckedButOk: "+currentSong.filterID,true);
+					}
+					else // Is repeat or Both on same album type
+					{
+						// just ignore
+						//print(currentSong.filterID + " failed");
+						if(currentSong.type=="single")
+						{
+							// could be EP vs single!
+							if(currentSong.album.total_tracks > otherSong.album.total_tracks)
+							{
+								AllSongs[positionInAllSongs] = -1
+								AllSongs.push(i);
+								SongDictionary[currentSong.filterID] = AllSongs.length-1;
+								SongDictionary[songIsActually] = AllSongs.length-1;
+						//print("SingleChecked: "+currentSong.filterID,true);
+							}
+							// Otherwise ignore
+						}
+					}
+				}
+			}
+		}
+	}
+	var newSongs = []
+	for(let i=0; i<AllSongs.length; i++)
+	{
+		if(AllSongs[i]!=-1)
+		{
+			newSongs.push(songs[AllSongs[i]]);
+		}
+	}
+	print(songs.length + " songs just became " + newSongs.length,true);
+	songs = newSongs;
+	
+    const playlist = await safeFetch(
+      `https://api.spotify.com/v1/users/${me.id}/playlists`,
+      "POST",
+      JSON.stringify({ name: artistName, "description": discography.length + " Albums & Singles", public: false }),
+      headers
+    );
+
+	let tracks = songs.map(s => s.track.uri);
+
+    for (let i = 0; i < tracks.length; i += PLAYLIST_CHUNK) {
+      await safeFetch(
+        `https://api.spotify.com/v1/playlists/${playlist.id}/tracks`,
+        "POST",
+        JSON.stringify({ uris: tracks.slice(i, i + PLAYLIST_CHUNK) }),
+        headers
+      );
+    }
+
+    print("Playlist created");
+	let playlistId = playlist.id;
+
+	// What about finding popularity of each track?
+			print("Popularities per track/album:")
+			var playlistData = [];
+			var PerAlbum = [];
+			PerAlbum[-1] = []; // contains all main songs
+			PerAlbum[-2] = []; // contains ALL songs incl. main songs
+			var AlbumsOrder = [];
+			let playlistDataCount = 0;
+			
+			const readPlaylist = await safeFetch(
+				`https://api.spotify.com/v1/playlists/${playlistId}/tracks?market=${MARKET}&limit=100`,
+				"GET", null, headers
+			);
+			readPlaylist.items.forEach(x => {
+				let track = x.track;
+
+				if(track.album.artists[0].id == artistID)
+				{
+					PerAlbum[-1].push(track);
+				}
+				PerAlbum[-2].push(track);
+				playlistData[track.id] = track;
+				playlistDataCount++;
+				let albumID = track.album.id;
+				//print("Album: "+albumID);
+				if(PerAlbum[albumID]==null)
+				{
+					PerAlbum[albumID]=track.album;
+					PerAlbum[albumID].isMe = track.album.artists[0].id == artistID;
+					PerAlbum[albumID].tracks=[];
+					AlbumsOrder.push(albumID);
+				}
+				PerAlbum[albumID].tracks.push({
+					'id' : track.id,
+					'popularity' : track.popularity,
+					'name' : track.name
+				});
+			});
+
+			print("Popularities count: " + playlistDataCount,true);
+      if(SpotifyUsername.toLowerCase()=="taylorf10rblx")
+      {
+        var newMusicPlaylist = "0eTsXBuVVN7mHV9N9s31EE";
+  			var newMusicURL = "https://api.spotify.com/v1/playlists/" + newMusicPlaylist + "/tracks";
+			let newMusicUris = [];
+  			for (let albumNum=0; albumNum<AlbumsOrder.length; albumNum++)
+  			{
+  				let albumCurrent = PerAlbum[AlbumsOrder[albumNum]];
+  				// Only include albums/compils where they are the main artist (at least 6 songs):
+  				if (albumCurrent.isMe && albumCurrent.album_type!="single" && albumCurrent.album_type!="appears_on" && albumCurrent.tracks.length>=6)
+  				{
+  					albumCurrent.tracks.sort(function(a,b){
+  						return -1*(a.popularity-b.popularity);
+  					});
+  					albumCurrent.tracks.forEach(function(track){
+  					//	print(track.name + " ["+track.popularity+"]",true);
+  					});
+  					print(albumCurrent.name + "(" + albumCurrent.album_type +","+ albumCurrent.tracks.length + ","+(albumCurrent.isMe ? "main" : "ft")+"): " + albumCurrent.tracks[0].name + " ["+albumCurrent.tracks[0].popularity+"]",true);
+  
+  					// Add to 'New Music':
+					newMusicUris.push(albumCurrent.tracks[0].uri);
+  				}
+  			}
+  			if(newMusicUris.length==0)
+  			{
+  				if(AlbumsOrder.length==0)
+  				{
+  					print("No songs at all.",true);
+  				}
+  				else
+  				{
+  					print("Hurdle: No proper albums so summarising with single song (first main, or ft if no main)",true)
+  					let mainSongs = PerAlbum[-1];
+  					if(mainSongs.length==0)
+  					{
+  						mainSongs = PerAlbum[-2]; // non-main
+  					}
+  					mainSongs.sort(function(a,b){
+  						return -1*(a.popularity-b.popularity);
+  					});
+					newMusicUris.push(mainSongs[0].uri);
+  				}
+  			}
+  			if(choice.substring(9,10) == "Y")
+  			{
+  				if(newMusicUris.length>0)
+  				{
+					await safeFetch(
+					newMusicURL,
+					"POST",
+					JSON.stringify({ uris: tracks.slice(i, i + PLAYLIST_CHUNK) }),
+					headers
+					);
+  					print("Added to new music",true);
+  				}
+  			}
+  			else
+  			{
+  				print("Didn't add to new music since this is disabled.",true);
+  			}
+      }
+      else if (choice.substring(9,10) == "Y")
+      {
+          print(choice.substring(9,10) == "Y" ? "Didn't add to new music since you are not the creator" : "Didn't add to new music since this is disabled.",true);
+      }
+  }
+
+  print("<b>All done</b>");
+
+  cookie = getCookie("Options");
+	MusicArtist = cookie.split("~~")[0];
+	choice = cookie.split("~~")[1];
+	document.getElementById("artist").value = MusicArtist;
+	document.getElementById("regular").checked = choice.substring(0,1) == "Y";
+	document.getElementById("live").checked = choice.substring(1,2) == "Y";
+	document.getElementById("remix").checked = choice.substring(2,3) == "Y";
+	document.getElementById("acoustic").checked = choice.substring(3,4) == "Y";
+	document.getElementById("demo").checked = choice.substring(4,5) == "Y";
+	document.getElementById("instrumentals").checked = choice.substring(5,6) == "Y";
+	document.getElementById("commentary").checked = choice.substring(6,7) == "Y";
+	document.getElementById("remastered").checked = choice.substring(7,8) == "Y";
+	document.getElementById("earliestFirst").checked = choice.substring(8,9) == "Y";
+	document.getElementById("addToNewMusic").checked = choice.substring(9,10) == "Y";
+})();
+</script>
+</body>
+</html>
